@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """strike.py - portable API quota strike harness.
 
@@ -54,6 +54,7 @@ def load_config():
         "key": DEFAULT_KEY,
         "models": [],          # empty -> discovered from /models
         "all_models": False,   # False -> skip embedding/tts/image families
+        "mute_seconds": 60,    # after a 429, skip that model for this long
         "prompt": "ping",
         "workers": 8,
         "rpm": 0,              # 0 = unlimited
@@ -391,6 +392,9 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
     dead = set()                       # models that answered 404 (retired for this key)
     dead_lock = threading.Lock()
     flunk = {}                         # model -> consecutive transport failures
+    okc = {}                           # model -> successes seen this run
+    mute_until = {}                    # model -> monotonic time to retry after a 429
+    MUTE_S = float(cfg.get("mute_seconds", 60))   # stop burning requests on a drained model
     FLUNK_LIMIT = 3
     deadline = time.monotonic() + duration if duration > 0 else float("inf")
 
@@ -411,6 +415,10 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
                 if len(dead) >= len(targets):
                     stats.stop.set()
                     break
+                continue
+            if mute_until.get(model, 0) > time.monotonic():
+                if all(mute_until.get(t, 0) > time.monotonic() for t in targets):
+                    time.sleep(2)
                 continue
             rate.take()
             attempts = 0
@@ -433,11 +441,20 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
                     break
                 if bucket == "transport":
                     with dead_lock:
-                        flunk[model] = flunk.get(model, 0) + 1
-                        if flunk[model] >= FLUNK_LIMIT:
-                            dead.add(model)
+                        # a model that already answered 200 is not unreachable; keep it
+                        if okc.get(model, 0) == 0:
+                            flunk[model] = flunk.get(model, 0) + 1
+                            if flunk[model] >= FLUNK_LIMIT:
+                                dead.add(model)
                     if model in dead:
                         break
+                elif bucket == "quota":
+                    with dead_lock:
+                        mute_until[model] = time.monotonic() + MUTE_S
+                elif bucket == "ok":
+                    with dead_lock:
+                        okc[model] = okc.get(model, 0) + 1
+                        flunk[model] = 0
                 if 500 <= st < 600 and attempts < cfg["retry_5xx"]:
                     attempts += 1
                     time.sleep(0.5 * attempts)
@@ -520,6 +537,7 @@ def cmd_selftest(cfg):
     test_cfg["base"] = "http://127.0.0.1:%d/v1beta" % port
     test_cfg["key"] = "stub-key-not-a-real-credential"
     test_cfg["models"] = []
+    test_cfg["mute_seconds"] = 0.5
     test_cfg["duration"] = 6
     test_cfg["workers"] = 8
     test_cfg["rpm"] = 0
