@@ -53,6 +53,7 @@ def load_config():
         "base": DEFAULT_BASE,
         "key": DEFAULT_KEY,
         "models": [],          # empty -> discovered from /models
+        "all_models": False,   # False -> skip embedding/tts/image families
         "prompt": "ping",
         "workers": 8,
         "rpm": 0,              # 0 = unlimited
@@ -83,6 +84,10 @@ def load_config():
         cfg.update({k: v for k, v in user.items() if k in cfg})
         if isinstance(user.get("output"), dict):
             cfg["output"].update(user["output"])
+    for _name in ("results", "summary"):
+        _p = cfg["output"].get(_name)
+        if _p and not os.path.isabs(_p):
+            cfg["output"][_name] = os.path.join(HERE, _p)
     return cfg
 
 
@@ -234,6 +239,37 @@ class Stats:
             }
 
 
+class Budget:
+    """Exact request budget shared by all workers (no overshoot from races)."""
+
+    def __init__(self, limit):
+        self.limit = int(limit or 0)
+        self.lock = threading.Lock()
+        self.used = 0
+
+    def take(self):
+        if not self.limit:
+            return True
+        with self.lock:
+            if self.used >= self.limit:
+                return False
+            self.used += 1
+            return True
+
+
+# families that appear in /models but do not serve generateContent
+NON_TEXT_MODEL_HINTS = (
+    "embedding", "tts", "image", "imagen", "lyria", "aqa", "veo",
+    "computer-use", "robotics", "deep-research", "antigravity",
+)
+
+
+def text_models(models):
+    """Drop families whose :generateContent is 400/404 by design."""
+    return [m for m in models
+            if not any(h in m.lower() for h in NON_TEXT_MODEL_HINTS)]
+
+
 class Rate:
     """Token bucket by fixed interval; rpm<=0 disables pacing."""
 
@@ -312,7 +348,7 @@ def cmd_map(cfg):
     if status != 200:
         print("cannot enumerate models: HTTP %s %s" % (status, text[:200]))
         return 1
-    targets = cfg["models"] or models
+    targets = cfg["models"] or (models if cfg.get("all_models") else text_models(models))
     print("mapping %d models with one minimal request each" % len(targets))
     rows = []
     for m in targets:
@@ -341,7 +377,7 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
     max_requests = cfg["max_requests"] if max_requests is None else max_requests
 
     status, text, models, _ = list_models(cfg)
-    targets = cfg["models"] or models
+    targets = cfg["models"] or (models if cfg.get("all_models") else text_models(models))
     if not targets:
         print("no models to hit: /models returned HTTP %s" % status)
         print(text[:300])
@@ -349,7 +385,12 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
 
     stats = Stats()
     rate = Rate(rpm)
+    budget = Budget(max_requests)
     sink = Sink(cfg["output"]["results"])
+    dead = set()                       # models that answered 404 (retired for this key)
+    dead_lock = threading.Lock()
+    flunk = {}                         # model -> consecutive transport failures
+    FLUNK_LIMIT = 3
     deadline = time.monotonic() + duration if duration > 0 else float("inf")
 
     print("strike: models=%d workers=%d rpm=%s duration=%ss budget=%s" % (
@@ -360,11 +401,16 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
     def worker(idx):
         i = idx
         while not stats.stop.is_set() and time.monotonic() < deadline:
-            if max_requests and stats.sent >= max_requests:
+            if not budget.take():
                 stats.stop.set()
                 break
             model = targets[i % len(targets)]
             i += 1
+            if model in dead:
+                if len(dead) >= len(targets):
+                    stats.stop.set()
+                    break
+                continue
             rate.take()
             attempts = 0
             while True:
@@ -379,6 +425,17 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
                     "latency_ms": round(dt * 1000, 1),
                     "err": None if st == 200 else body[:200],
                 })
+                if bucket == "no_model":
+                    with dead_lock:
+                        dead.add(model)
+                    break
+                if bucket == "transport":
+                    with dead_lock:
+                        flunk[model] = flunk.get(model, 0) + 1
+                        if flunk[model] >= FLUNK_LIMIT:
+                            dead.add(model)
+                    if model in dead:
+                        break
                 if 500 <= st < 600 and attempts < cfg["retry_5xx"]:
                     attempts += 1
                     time.sleep(0.5 * attempts)
@@ -394,9 +451,10 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
             if now - last >= 2:
                 last = now
                 snap = stats.snapshot()
-                print("  t=%5.0fs sent=%6d rps=%6.2f ok=%d quota=%d other=%d" % (
+                print("  t=%5.0fs sent=%6d rps=%6.2f ok=%d quota=%d dead=%d other=%d" % (
                     snap["elapsed_s"], snap["sent"], snap["rps"],
                     snap["buckets"].get("ok", 0), snap["buckets"].get("quota", 0),
+                    len(dead),
                     snap["sent"] - snap["buckets"].get("ok", 0) - snap["buckets"].get("quota", 0)))
             if stats.stop.is_set():
                 break
@@ -406,6 +464,7 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
     sink.close()
     snap = stats.snapshot()
     snap["targets"] = targets
+    snap["dropped_models"] = sorted(dead)
     snap["config"] = {"workers": workers, "rpm": rpm, "duration": duration,
                       "budget": max_requests}
     with open(cfg["output"]["summary"], "w", encoding="utf-8") as fh:
@@ -506,6 +565,8 @@ def main(argv):
     ap.add_argument("--key", default=None)
     ap.add_argument("--base", default=None)
     ap.add_argument("--proxy", default=None, help="http://host:port ; overrides config")
+    ap.add_argument("--all-models", action="store_true",
+                    help="also hit embedding/tts/image families (mostly 400/404)")
     args = ap.parse_args(argv)
 
     cfg = load_config()
@@ -515,6 +576,8 @@ def main(argv):
         cfg["base"] = args.base
     if args.proxy:
         cfg["proxy"] = args.proxy
+    if args.all_models:
+        cfg["all_models"] = True
 
     if args.mode == "probe":
         return cmd_probe(cfg)

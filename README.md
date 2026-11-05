@@ -56,7 +56,8 @@ run.bat strike --duration 30 --workers 12 --rpm 600
 |---|---|---|
 | `key` | `""` | API key。**仓库里留空**，本地填自己的，或用 `--key` 传入 |
 | `base` | `https://generativelanguage.googleapis.com/v1beta` | 端点，可指向自建 mock |
-| `models` | `[]` | 空 = 自动从 `/models` 拉全量 |
+| `models` | `[]` | 空 = 自动从 `/models` 拉全量（默认过滤掉 embedding/tts/image 等不服务 `generateContent` 的家族） |
+| `all_models` | `false` | `true` = 不过滤，全部打（多数会 400/404），等价命令行 `--all-models` |
 | `prompt` | `ping` | 请求体文本，越短越省配额 |
 | `workers` | `12` | 并发线程数 |
 | `rpm` | `600` | 每分钟请求上限，`0` = 不限 |
@@ -88,6 +89,14 @@ run.bat strike --duration 30 --workers 12 --rpm 600
 ```
 
 `bucket` 取值：`ok` `quota` `key_revoked` `forbidden` `no_model` `bad_request` `server_error` `transport` `other`。
+
+两个自适应行为（省配额、少噪声）：
+
+- 某模型回一次 `404`（"no longer available to new users"）→ 本轮永久剔除，记入 `summary.dropped_models`
+- 某模型连续 3 次 `transport`（连不上/超时）→ 同样剔除，避免一个坏模型吃掉整个预算
+
+`summary.json` 里还有 `budget`/`duration`/`workers`/`rpm` 与完整 `targets` 列表，便于复现。
+`output` 里的相对路径一律**锚定到脚本所在目录**，与当前工作目录无关。
 
 三个判读要点：
 
