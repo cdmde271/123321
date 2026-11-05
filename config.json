@@ -1,0 +1,17 @@
+{
+  "base": "https://generativelanguage.googleapis.com/v1beta",
+  "key": "",
+  "models": [],
+  "prompt": "ping",
+  "workers": 12,
+  "rpm": 600,
+  "duration": 60,
+  "max_requests": 0,
+  "timeout": 30,
+  "retry_5xx": 2,
+  "proxy": "",
+  "output": {
+    "results": "results.jsonl",
+    "summary": "summary.json"
+  }
+}
