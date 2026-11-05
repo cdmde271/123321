@@ -570,6 +570,8 @@ def main(argv):
     ap.add_argument("--proxy", default=None, help="http://host:port ; overrides config")
     ap.add_argument("--all-models", action="store_true",
                     help="also hit embedding/tts/image families (mostly 400/404)")
+    ap.add_argument("--models", default=None,
+                    help="comma list, e.g. gemini-3.6-flash,gemini-3.1-flash-lite")
     args = ap.parse_args(argv)
 
     cfg = load_config()
@@ -581,6 +583,8 @@ def main(argv):
         cfg["proxy"] = args.proxy
     if args.all_models:
         cfg["all_models"] = True
+    if args.models:
+        cfg["models"] = [m.strip() for m in args.models.split(",") if m.strip()]
 
     if args.mode == "probe":
         return cmd_probe(cfg)
