@@ -6,6 +6,22 @@ Pure Python standard library, no dependencies, no install, runs from a USB stick
 > 一个可移植的 API 配额压力测试器：纯标准库、零依赖、可放 U 盘直接跑。
 > 用于验证一个 API key 的配额边界、429 触发阈值与限速行为。
 
+## Download
+
+| 方式 | 链接 | 说明 |
+|---|---|---|
+| **打包下载（推荐）** | [Releases → v0.1.0](https://github.com/cdmde271/123321/releases/latest) | `api-strike-v0.1.0.zip`，解压即用，含 `py/` 解释器挂载点 |
+| 源码包（main） | [`main.zip`](https://github.com/cdmde271/123321/archive/refs/heads/main.zip) | GitHub 自动生成，不含 git 历史 |
+| git | `git clone https://github.com/cdmde271/123321.git` | 需要 git |
+
+打包版解压后就是完整目录，不需要 git、不需要 pip：
+
+```
+api-strike/
+  strike.py  config.json  run.bat  README.txt  README.md
+  py/   <- 把 python-3.12.x-embed-amd64.zip 的内容解到这里（可选）
+```
+
 ## Quick start
 
 ```bash
