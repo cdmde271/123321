@@ -68,8 +68,18 @@ def load_config():
         },
     }
     if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
-            user = json.load(fh)
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8-sig") as fh:
+                user = json.load(fh)
+        except json.JSONDecodeError as exc:
+            lines = exc.doc.splitlines() or [""]
+            bad = lines[exc.lineno - 1] if 0 < exc.lineno <= len(lines) else ""
+            print("config.json is not valid JSON")
+            print("  file  : %s" % CONFIG_PATH)
+            print("  error : %s (line %d, column %d)" % (exc.msg, exc.lineno, exc.colno))
+            print("  line  : %s" % bad.strip())
+            print('  hint  : model names need quotes -> "models": ["gemini-2.5-flash"]')
+            raise SystemExit(2)
         cfg.update({k: v for k, v in user.items() if k in cfg})
         if isinstance(user.get("output"), dict):
             cfg["output"].update(user["output"])
