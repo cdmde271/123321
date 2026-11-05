@@ -387,15 +387,16 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
     rate = Rate(rpm)
     budget = Budget(max_requests)
     sink = Sink(cfg["output"]["results"])
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-%04x" % random.getrandbits(16)
     dead = set()                       # models that answered 404 (retired for this key)
     dead_lock = threading.Lock()
     flunk = {}                         # model -> consecutive transport failures
     FLUNK_LIMIT = 3
     deadline = time.monotonic() + duration if duration > 0 else float("inf")
 
-    print("strike: models=%d workers=%d rpm=%s duration=%ss budget=%s" % (
+    print("strike: models=%d workers=%d rpm=%s duration=%ss budget=%s run=%s" % (
         len(targets), workers, rpm or "unlimited", duration or "none",
-        max_requests or "unlimited"))
+        max_requests or "unlimited", run_id))
     print("results -> %s" % cfg["output"]["results"])
 
     def worker(idx):
@@ -418,6 +419,7 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
                 bucket = stats.add(st, body, dt)
                 sink.write({
                     "ts": round(time.time(), 3),
+                    "run": run_id,
                     "t_rel": round(stats.elapsed(), 3),
                     "model": model,
                     "status": st,
@@ -463,6 +465,7 @@ def cmd_strike(cfg, duration=None, workers=None, rpm=None, max_requests=None):
 
     sink.close()
     snap = stats.snapshot()
+    snap["run"] = run_id
     snap["targets"] = targets
     snap["dropped_models"] = sorted(dead)
     snap["config"] = {"workers": workers, "rpm": rpm, "duration": duration,
